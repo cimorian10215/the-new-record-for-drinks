@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>手搖統計 2026 跨裝置版</title>
+    <title>手搖統計 2026 智慧選單版</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -23,7 +23,7 @@
             projectId: "the-new-record-for-drinks",
             storageBucket: "the-new-record-for-drinks.firebasestorage.app",
             messagingSenderId: "661434625679",
-            appId: "1:661434625679:web:abe48c7a229e59a3334af"
+            appId: "1:661434625679:web:abe48c7a229e59a3334afa"
         };
 
         const app = initializeApp(firebaseConfig);
@@ -32,7 +32,7 @@
     </script>
 
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useMemo } = React;
 
         function App() {
             const [syncKey, setSyncKey] = useState(localStorage.getItem('drink_sync_key') || '');
@@ -44,9 +44,20 @@
             
             // 編輯中的多杯列表
             const [editingDrinks, setEditingDrinks] = useState([]);
+            // 控制哪一杯的店家下拉選單正被打開
+            const [openDropdownIdx, setOpenDropdownIdx] = useState(null);
 
             const iceOptions = ['正常', '少冰', '微冰', '去冰', '常溫', '溫', '固定'];
             const sugarOptions = ['全糖', '少糖', '半糖', '微糖', '一分', '無糖', '固定'];
+
+            // 智慧店家資料庫：從現有紀錄中抓取不重複的店名
+            const shopDatabase = useMemo(() => {
+                const shops = new Set();
+                Object.values(records).flat().forEach(r => {
+                    if (r && r.shop) shops.add(r.shop.trim());
+                });
+                return Array.from(shops).sort();
+            }, [records]);
 
             // 隨機產生金鑰
             const generateKey = () => {
@@ -91,10 +102,10 @@
 
             const openModal = (date) => {
                 setSelectedDate(date);
-                // 如果該日期已有資料，讀取陣列；若無，預設一杯空資料
                 const existing = records[date] || [{ shop: '', item: '', price: '', ice: '少冰', sugar: '微糖', id: Date.now() }];
                 setEditingDrinks(JSON.parse(JSON.stringify(existing)));
                 setModalOpen(true);
+                setOpenDropdownIdx(null);
             };
 
             const addDrinkField = () => {
@@ -113,7 +124,6 @@
             };
 
             const handleSave = () => {
-                // 過濾掉完全沒填寫店名的空白列
                 const validDrinks = editingDrinks.filter(d => d.shop.trim() !== '');
                 const newRecords = { ...records };
                 if (validDrinks.length > 0) {
@@ -126,12 +136,18 @@
                 setModalOpen(false);
             };
 
-            // 統計
             const stats = Object.values(records).flat().reduce((acc, r) => {
                 acc.totalSpent += (parseInt(r.price) || 0);
                 acc.totalCups += 1;
                 return acc;
             }, { totalSpent: 0, totalCups: 0 });
+
+            // 點擊外部關閉選單
+            useEffect(() => {
+                const closeDrop = () => setOpenDropdownIdx(null);
+                window.addEventListener('click', closeDrop);
+                return () => window.removeEventListener('click', closeDrop);
+            }, []);
 
             if (!syncKey) {
                 return (
@@ -143,7 +159,7 @@
                             <input 
                                 type="text" 
                                 placeholder="輸入 8 位密鑰" 
-                                className="w-full p-4 bg-slate-50 rounded-2xl mb-4 text-center font-mono font-bold uppercase"
+                                className="w-full p-4 bg-slate-50 rounded-2xl mb-4 text-center font-mono font-bold uppercase outline-none focus:ring-2 focus:ring-orange-400"
                                 id="keyInput"
                             />
                             <button 
@@ -169,7 +185,7 @@
             return (
                 <div className="p-4 md:p-8 max-w-6xl mx-auto pb-20">
                     {statusMsg && (
-                        <div className="fixed top-4 right-4 bg-emerald-500 text-white px-6 py-3 rounded-2xl shadow-lg z-50 font-bold animate-bounce text-sm">
+                        <div className="fixed top-4 right-4 bg-emerald-500 text-white px-6 py-3 rounded-2xl shadow-lg z-[100] font-bold animate-bounce text-sm">
                             {statusMsg}
                         </div>
                     )}
@@ -178,7 +194,7 @@
                         <div className="text-center md:text-left">
                             <h1 className="text-3xl font-black text-slate-800 flex items-center gap-2 justify-center md:justify-start">🧋 手搖統計 2026</h1>
                             <div className="mt-2 flex items-center gap-2 text-[10px] font-bold text-slate-400 bg-slate-50 px-3 py-1 rounded-full border">
-                                🔑 同步密鑰：<span className="text-orange-500 font-mono select-all">{syncKey}</span>
+                                🔑 同步密鑰：<span className="text-orange-500 font-mono select-all cursor-pointer" title="點擊可選取複製">{syncKey}</span>
                             </div>
                         </div>
                         <div className="flex gap-4 w-full md:w-auto">
@@ -238,48 +254,85 @@
 
                     {modalOpen && (
                         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md flex items-center justify-center p-4 z-50 overflow-y-auto">
-                            <div className="bg-white p-6 md:p-8 rounded-[2.5rem] w-full max-w-md shadow-2xl my-auto animate-in fade-in zoom-in duration-200">
+                            <div className="bg-white p-6 md:p-8 rounded-[2.5rem] w-full max-w-md shadow-2xl my-auto animate-in fade-in zoom-in duration-200" onClick={e=>e.stopPropagation()}>
                                 <div className="flex justify-between items-center mb-6">
                                     <h2 className="text-2xl font-black text-slate-800">{selectedDate}</h2>
                                     <button onClick={()=>setModalOpen(false)} className="text-slate-300 hover:text-slate-500 text-2xl px-2">✕</button>
                                 </div>
                                 
-                                <div className="space-y-8 max-h-[60vh] overflow-y-auto pr-2 custom-scroll">
-                                    {editingDrinks.map((drink, index) => (
-                                        <div key={drink.id} className="p-5 bg-slate-50 rounded-[2rem] space-y-4 relative border border-slate-100 shadow-inner">
-                                            {editingDrinks.length > 1 && (
-                                                <button 
-                                                    onClick={() => removeDrinkField(index)}
-                                                    className="absolute -top-2 -right-2 bg-rose-500 text-white w-7 h-7 rounded-full text-xs font-bold shadow-lg"
-                                                >
-                                                    ✕
-                                                </button>
-                                            )}
-                                            <div className="grid grid-cols-2 gap-3">
-                                                <input type="text" placeholder="店家" className="col-span-1 p-3 bg-white rounded-xl font-bold text-sm shadow-sm" value={drink.shop} onChange={e=>handleUpdateDrink(index, 'shop', e.target.value)}/>
-                                                <input type="number" placeholder="價格" className="col-span-1 p-3 bg-white rounded-xl font-bold text-sm shadow-sm" value={drink.price} onChange={e=>handleUpdateDrink(index, 'price', e.target.value)}/>
-                                                <input type="text" placeholder="品項名稱" className="col-span-2 p-3 bg-white rounded-xl font-bold text-sm shadow-sm" value={drink.item} onChange={e=>handleUpdateDrink(index, 'item', e.target.value)}/>
-                                            </div>
+                                <div className="space-y-8 max-h-[60vh] overflow-y-auto pr-2 custom-scroll pb-4">
+                                    {editingDrinks.map((drink, index) => {
+                                        // 濾選選單顯示項目
+                                        const filteredShops = shopDatabase.filter(s => 
+                                            s.toLowerCase().includes(drink.shop.toLowerCase()) && s !== drink.shop
+                                        );
 
-                                            <div className="space-y-1">
-                                                <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">冰塊</div>
-                                                <div className="flex flex-wrap gap-1">
-                                                    {iceOptions.map(o => (
-                                                        <button key={o} onClick={()=>handleUpdateDrink(index, 'ice', o)} className={`px-2 py-1.5 rounded-lg text-[10px] font-bold border-2 transition-all ${drink.ice===o ? 'bg-cyan-500 border-cyan-500 text-white shadow-md' : 'border-white bg-white text-slate-400 hover:border-cyan-100'}`}>{o}</button>
-                                                    ))}
+                                        return (
+                                            <div key={drink.id} className="p-5 bg-slate-50 rounded-[2rem] space-y-4 relative border border-slate-100 shadow-inner">
+                                                {editingDrinks.length > 1 && (
+                                                    <button 
+                                                        onClick={() => removeDrinkField(index)}
+                                                        className="absolute -top-2 -right-2 bg-rose-500 text-white w-7 h-7 rounded-full text-xs font-bold shadow-lg z-10"
+                                                    >
+                                                        ✕
+                                                    </button>
+                                                )}
+                                                <div className="grid grid-cols-2 gap-3">
+                                                    {/* 智慧店家輸入框 */}
+                                                    <div className="col-span-1 relative">
+                                                        <input 
+                                                            type="text" 
+                                                            placeholder="店家" 
+                                                            className="w-full p-3 bg-white rounded-xl font-bold text-sm shadow-sm outline-none focus:ring-2 focus:ring-orange-200" 
+                                                            value={drink.shop} 
+                                                            onFocus={() => setOpenDropdownIdx(index)}
+                                                            onClick={(e) => { e.stopPropagation(); setOpenDropdownIdx(index); }}
+                                                            onChange={e=>handleUpdateDrink(index, 'shop', e.target.value)}
+                                                        />
+                                                        {openDropdownIdx === index && (filteredShops.length > 0 || (drink.shop && !shopDatabase.includes(drink.shop))) && (
+                                                            <div className="absolute left-0 right-0 top-full mt-1 bg-white rounded-xl shadow-xl border border-slate-100 z-[60] max-h-40 overflow-y-auto py-1">
+                                                                {filteredShops.map(s => (
+                                                                    <div 
+                                                                        key={s} 
+                                                                        className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-orange-50 cursor-pointer"
+                                                                        onClick={() => { handleUpdateDrink(index, 'shop', s); setOpenDropdownIdx(null); }}
+                                                                    >
+                                                                        {s}
+                                                                    </div>
+                                                                ))}
+                                                                {drink.shop && !shopDatabase.includes(drink.shop) && (
+                                                                    <div className="px-4 py-2 text-[10px] font-black text-orange-500 bg-orange-50 italic">
+                                                                        + 新增「{drink.shop}」到清單
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        )}
+                                                    </div>
+
+                                                    <input type="number" placeholder="價格" className="col-span-1 p-3 bg-white rounded-xl font-bold text-sm shadow-sm outline-none focus:ring-2 focus:ring-orange-200" value={drink.price} onChange={e=>handleUpdateDrink(index, 'price', e.target.value)}/>
+                                                    <input type="text" placeholder="品項名稱" className="col-span-2 p-3 bg-white rounded-xl font-bold text-sm shadow-sm outline-none focus:ring-2 focus:ring-orange-200" value={drink.item} onChange={e=>handleUpdateDrink(index, 'item', e.target.value)}/>
+                                                </div>
+
+                                                <div className="space-y-1">
+                                                    <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">冰塊</div>
+                                                    <div className="flex flex-wrap gap-1">
+                                                        {iceOptions.map(o => (
+                                                            <button key={o} onClick={()=>handleUpdateDrink(index, 'ice', o)} className={`px-2 py-1.5 rounded-lg text-[10px] font-bold border-2 transition-all ${drink.ice===o ? 'bg-cyan-500 border-cyan-500 text-white shadow-md' : 'border-white bg-white text-slate-400 hover:border-cyan-100'}`}>{o}</button>
+                                                        ))}
+                                                    </div>
+                                                </div>
+
+                                                <div className="space-y-1">
+                                                    <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">甜度</div>
+                                                    <div className="flex flex-wrap gap-1">
+                                                        {sugarOptions.map(o => (
+                                                            <button key={o} onClick={()=>handleUpdateDrink(index, 'sugar', o)} className={`px-2 py-1.5 rounded-lg text-[10px] font-bold border-2 transition-all ${drink.sugar===o ? 'bg-pink-500 border-pink-500 text-white shadow-md' : 'border-white bg-white text-slate-400 hover:border-pink-100'}`}>{o}</button>
+                                                        ))}
+                                                    </div>
                                                 </div>
                                             </div>
-
-                                            <div className="space-y-1">
-                                                <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">甜度</div>
-                                                <div className="flex flex-wrap gap-1">
-                                                    {sugarOptions.map(o => (
-                                                        <button key={o} onClick={()=>handleUpdateDrink(index, 'sugar', o)} className={`px-2 py-1.5 rounded-lg text-[10px] font-bold border-2 transition-all ${drink.sugar===o ? 'bg-pink-500 border-pink-500 text-white shadow-md' : 'border-white bg-white text-slate-400 hover:border-pink-100'}`}>{o}</button>
-                                                    ))}
-                                                </div>
-                                            </div>
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
 
                                 <button 
