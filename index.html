@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我超愛喝手搖 - 2026 飲品日誌</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- React & Babel for Browser Rendering -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; }
+        .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); }
+    </style>
+</head>
+<body class="bg-orange-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // Firebase SDKs from CDN
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
+        import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
+        import { getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
+
+        // --- Firebase Configuration ---
+        const firebaseConfig = {
+            apiKey: "", // 請在此處填入您的 Firebase API Key
+            authDomain: "your-app.firebaseapp.com",
+            projectId: "your-app",
+            storageBucket: "your-app.appspot.com",
+            messagingSenderId: "123456789",
+            appId: "1:123456789:web:abc123"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = 'drink-tracker-2026';
+
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [currentDate, setCurrentDate] = useState(new Date(2026, 0, 1));
+            const [drinks, setDrinks] = useState({});
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [selectedDate, setSelectedDate] = useState(null);
+            
+            const [formData, setFormData] = useState({
+                shop: '', item: '', ice: '微冰', sugar: '微糖', price: '', note: ''
+            });
+
+            const iceOptions = ['正常', '少冰', '微冰', '去冰', '常溫', '溫'];
+            const sugarOptions = ['全糖', '少糖', '半糖', '微糖', '一分糖', '無糖'];
+
+            useEffect(() => {
+                const unsubscribe = onAuthStateChanged(auth, (u) => {
+                    setUser(u);
+                    setLoading(false);
+                });
+                return () => unsubscribe();
+            }, []);
+
+            useEffect(() => {
+                if (!user) return;
+                const drinksCol = collection(db, 'artifacts', appId, 'users', user.uid, 'drinks');
+                const unsubscribe = onSnapshot(drinksCol, (snapshot) => {
+                    const data = {};
+                    snapshot.forEach(doc => {
+                        const d = doc.data();
+                        if (!data[d.dateKey]) data[d.dateKey] = [];
+                        data[d.dateKey].push({ ...d, id: doc.id });
+                    });
+                    setDrinks(data);
+                });
+                return () => unsubscribe();
+            }, [user]);
+
+            const login = async () => {
+                try { await signInWithPopup(auth, new GoogleAuthProvider()); } 
+                catch (e) { console.error(e); }
+            };
+
+            const logout = () => signOut(auth);
+
+            const days = useMemo(() => {
+                const year = currentDate.getFullYear();
+                const month = currentDate.getMonth();
+                const first = new Date(year, month, 1).getDay();
+                const count = new Date(year, month + 1, 0).getDate();
+                return [...Array(first).fill(null), ...([...Array(count).keys()].map(i => new Date(year, month, i + 1)))];
+            }, [currentDate]);
+
+            const stats = useMemo(() => {
+                const prefix = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
+                let total = 0, count = 0;
+                Object.entries(drinks).forEach(([key, list]) => {
+                    if (key.startsWith(prefix)) {
+                        list.forEach(d => { total += Number(d.price) || 0; count++; });
+                    }
+                });
+                return { total, count };
+            }, [drinks, currentDate]);
+
+            const openModal = (date) => {
+                if (!user) return alert("請先登入！");
+                const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+                setSelectedDate(key);
+                setFormData({ shop: '', item: '', ice: '微冰', sugar: '微糖', price: '', note: '' });
+                setIsModalOpen(true);
+            };
+
+            const save = async () => {
+                if (!formData.shop || !formData.item) return alert("請填寫內容");
+                await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'drinks'), {
+                    ...formData, dateKey: selectedDate, createdAt: serverTimestamp()
+                });
+                setIsModalOpen(false);
+            };
+
+            const remove = async (id) => {
+                await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'drinks', id));
+            };
+
+            if (loading) return <div className="h-screen flex items-center justify-center text-orange-500 font-bold">載入中...</div>;
+
+            return (
+                <div className="max-w-4xl mx-auto p-4 md:p-8">
+                    <header className="bg-white p-6 rounded-[2rem] shadow-sm border border-orange-100 flex flex-col md:flex-row justify-between items-center mb-8">
+                        <div className="flex items-center gap-4">
+                            <div className="bg-orange-500 p-3 rounded-2xl text-white"><i data-lucide="coffee"></i></div>
+                            <div>
+                                <h1 className="text-2xl font-black text-slate-800">我超愛喝手搖</h1>
+                                {user ? (
+                                    <div className="text-xs text-slate-400 font-bold">已連線：{user.displayName} <button onClick={logout} className="ml-2 text-red-400">登出</button></div>
+                                ) : (
+                                    <button onClick={login} className="text-xs text-orange-600 font-bold">點此登入 Google 同步資料</button>
+                                )}
+                            </div>
+                        </div>
+                        <div className="flex gap-4 mt-4 md:mt-0">
+                            <div className="bg-orange-100 px-4 py-2 rounded-xl text-center">
+                                <p className="text-[10px] font-bold text-orange-700">本月花費</p>
+                                <p className="text-xl font-black text-orange-600">${stats.total}</p>
+                            </div>
+                            <div className="bg-blue-100 px-4 py-2 rounded-xl text-center">
+                                <p className="text-[10px] font-bold text-blue-700">飲用杯數</p>
+                                <p className="text-xl font-black text-blue-600">{stats.count}</p>
+                            </div>
+                        </div>
+                    </header>
+
+                    <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-xl font-black text-slate-700">{currentDate.getFullYear()} 年 {currentDate.getMonth() + 1} 月</h2>
+                        <div className="flex gap-2">
+                            <button onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1))} className="p-2 bg-white rounded-full border shadow-sm">←</button>
+                            <button onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1))} className="p-2 bg-white rounded-full border shadow-sm">→</button>
+                        </div>
+                    </div>
+
+                    <div className="calendar-grid gap-2">
+                        {['日','一','二','三','四','五','六'].map(d => <div key={d} className="text-center text-xs font-bold text-slate-300 py-2">{d}</div>)}
+                        {days.map((date, i) => {
+                            const key = date ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` : null;
+                            const items = drinks[key] || [];
+                            return (
+                                <div key={i} onClick={() => date && openModal(date)} className={`min-h-[100px] bg-white rounded-2xl p-2 border border-slate-50 shadow-sm flex flex-col ${!date ? 'opacity-20' : 'cursor-pointer hover:border-orange-200'}`}>
+                                    {date && <span className="text-xs font-bold text-slate-400">{date.getDate()}</span>}
+                                    <div className="flex-1 space-y-1 mt-1 overflow-hidden">
+                                        {items.slice(0, 2).map(item => <div key={item.id} className="text-[9px] bg-orange-50 text-orange-700 px-1 rounded truncate font-bold">{item.shop}</div>)}
+                                        {items.length > 2 && <div className="text-[8px] text-slate-300 text-center">+{items.length - 2}</div>}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    {isModalOpen && (
+                        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                            <div className="bg-white w-full max-w-md rounded-[2rem] overflow-hidden flex flex-col">
+                                <div className="bg-orange-500 p-6 text-white flex justify-between">
+                                    <h3 className="font-black text-lg">新增記錄 ({selectedDate})</h3>
+                                    <button onClick={() => setIsModalOpen(false)}>✕</button>
+                                </div>
+                                <div className="p-6 space-y-4 overflow-y-auto max-h-[60vh]">
+                                    {drinks[selectedDate]?.map(d => (
+                                        <div key={d.id} className="flex justify-between items-center bg-slate-50 p-2 rounded-xl text-xs">
+                                            <span>{d.shop} | {d.item} (${d.price})</span>
+                                            <button onClick={() => remove(d.id)} className="text-red-400">刪除</button>
+                                        </div>
+                                    ))}
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <input className="bg-slate-100 p-2 rounded-lg text-sm" placeholder="店名" value={formData.shop} onChange={e => setFormData({...formData, shop: e.target.value})} />
+                                        <input className="bg-slate-100 p-2 rounded-lg text-sm" placeholder="品項" value={formData.item} onChange={e => setFormData({...formData, item: e.target.value})} />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <p className="text-[10px] font-bold text-slate-400">冰塊</p>
+                                        <div className="grid grid-cols-3 gap-1">
+                                            {iceOptions.map(o => <button key={o} onClick={() => setFormData({...formData, ice: o})} className={`text-[10px] py-1 border rounded ${formData.ice === o ? 'bg-orange-500 text-white' : ''}`}>{o}</button>)}
+                                        </div>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <p className="text-[10px] font-bold text-slate-400">甜度</p>
+                                        <div className="grid grid-cols-3 gap-1">
+                                            {sugarOptions.map(o => <button key={o} onClick={() => setFormData({...formData, sugar: o})} className={`text-[10px] py-1 border rounded ${formData.sugar === o ? 'bg-orange-500 text-white' : ''}`}>{o}</button>)}
+                                        </div>
+                                    </div>
+                                    <input type="number" className="w-full bg-slate-100 p-2 rounded-lg text-sm" placeholder="價格" value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} />
+                                    <input className="w-full bg-slate-100 p-2 rounded-lg text-sm" placeholder="備註" value={formData.note} onChange={e => setFormData({...formData, note: e.target.value})} />
+                                </div>
+                                <div className="p-6 bg-slate-50 flex gap-2">
+                                    <button onClick={() => setIsModalOpen(false)} className="flex-1 py-2 font-bold text-slate-400">取消</button>
+                                    <button onClick={save} className="flex-1 py-2 bg-orange-600 text-white rounded-xl font-bold">儲存快樂 ✨</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+
+        // Initialize Lucide icons after render
+        setTimeout(() => lucide.createIcons(), 500);
+    </script>
+</body>
+</html>
