@@ -1,310 +1,411 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { 
-  Calendar, ChevronLeft, ChevronRight, Plus, Trash2, 
-  PieChart, DollarSign, Coffee, Loader2 
-} from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, deleteDoc } from 'firebase/firestore';
 
-const App = () => {
+// --- Firebase 設定 ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+// 使用特定的儲存 ID 以免跟出勤紀錄混淆
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'bubble-tea-tracker-2026';
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [records, setRecords] = useState({});
   const [loading, setLoading] = useState(true);
-  const [currentDate, setCurrentDate] = useState(new Date(2026, 0, 1));
-  const [drinks, setDrinks] = useState({});
-  const [selectedDate, setSelectedDate] = useState(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [selectedDate, setSelectedDate] = useState('');
+  
+  // 編輯預設值
+  const defaultEditData = { 
+    shop: '', 
+    item: '', 
+    price: '', 
+    ice: '少冰', 
+    sugar: '微糖', 
+    note: '' 
+  };
+  const [editData, setEditData] = useState(defaultEditData);
+  const [statusMsg, setStatusMsg] = useState('');
 
-  // 表單狀態
-  const [formData, setFormData] = useState({
-    shop: '',
-    item: '',
-    ice: '微冰',
-    sugar: '微糖',
-    price: '',
-    note: ''
-  });
+  // 選項設定
+  const iceOptions = ['正常', '少冰', '微冰', '去冰', '常溫', '溫', '固定'];
+  const sugarOptions = ['全糖', '少糖', '半糖', '微糖', '一分', '無糖', '固定'];
 
-  const iceOptions = ['正常', '少冰', '微冰', '去冰', '常溫', '溫'];
-  const sugarOptions = ['全糖', '少糖', '半糖', '微糖', '一分糖', '無糖'];
-
-  // 初始化：從 localStorage 讀取資料
+  // 1. 身份驗證
   useEffect(() => {
-    const savedDrinks = localStorage.getItem('drink_tracker_data');
-    if (savedDrinks) {
+    const initAuth = async () => {
       try {
-        setDrinks(JSON.parse(savedDrinks));
-      } catch (error) {
-        console.error("讀取儲存資料失敗:", error);
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Auth Error:", err);
       }
-    }
-    setLoading(false);
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => setUser(u));
+    return () => unsubscribe();
   }, []);
 
-  // 當 drinks 改變時，存入 localStorage
+  // 2. 監聽 Firestore (讀取 'bubble_tea_data')
   useEffect(() => {
-    if (!loading) {
-      localStorage.setItem('drink_tracker_data', JSON.stringify(drinks));
-    }
-  }, [drinks, loading]);
-
-  // 日曆計算邏輯
-  const calendarDays = useMemo(() => {
-    const year = currentDate.getFullYear();
-    const month = currentDate.getMonth();
-    const firstDayOfMonth = new Date(year, month, 1).getDay();
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-    const days = [];
-    for (let i = 0; i < firstDayOfMonth; i++) days.push(null);
-    for (let i = 1; i <= daysInMonth; i++) days.push(new Date(year, month, i));
-    return days;
-  }, [currentDate]);
-
-  // 統計邏輯
-  const stats = useMemo(() => {
-    const year = currentDate.getFullYear();
-    const month = currentDate.getMonth();
-    const monthKeyPrefix = `${year}-${String(month + 1).padStart(2, '0')}`;
-    let totalSpent = 0;
-    let totalDrinks = 0;
-    Object.keys(drinks).forEach(dateKey => {
-      if (dateKey.startsWith(monthKeyPrefix)) {
-        drinks[dateKey].forEach(drink => {
-          totalSpent += Number(drink.price) || 0;
-          totalDrinks += 1;
-        });
+    if (!user) return;
+    // 這裡將文件 ID 改為 bubble_tea_data 以區隔其他應用
+    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'bubble_tea_data');
+    
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setRecords(docSnap.data().records || {});
+      } else {
+        setRecords({});
       }
+      setLoading(false);
+    }, (error) => {
+      console.error("Firestore Listen Error:", error);
+      setLoading(false);
     });
-    return { totalSpent, totalDrinks };
-  }, [drinks, currentDate]);
 
-  const formatDateKey = (date) => {
-    if (!date) return '';
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    return () => unsubscribe();
+  }, [user]);
+
+  const showStatus = (msg) => {
+    setStatusMsg(msg);
+    setTimeout(() => setStatusMsg(''), 2500);
   };
 
-  const openAddModal = (date) => {
-    setSelectedDate(formatDateKey(date));
-    setFormData({ shop: '', item: '', ice: '微冰', sugar: '微糖', price: '', note: '' });
-    setIsModalOpen(true);
+  // 儲存邏輯
+  const saveToCloud = async (newRecords) => {
+    if (!user) return;
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'bubble_tea_data');
+      await setDoc(docRef, { records: newRecords }, { merge: true });
+      showStatus('記帳成功！');
+    } catch (err) {
+      console.error("Save Error:", err);
+      showStatus('儲存失敗，請檢查網路');
+    }
   };
 
-  const saveDrink = () => {
-    if (!formData.shop || !formData.item) {
-      alert('請至少填寫店名與品項！');
+  const openModal = (date) => {
+    setSelectedDate(date);
+    const existing = records[date] || defaultEditData;
+    setEditData(existing);
+    setModalOpen(true);
+  };
+
+  const handleSave = () => {
+    if (!editData.shop || !editData.item) {
+      alert("請至少輸入店名和品項");
       return;
     }
-
-    const newDrink = {
-      ...formData,
-      id: crypto.randomUUID(),
-      createdAt: new Date().toISOString()
-    };
-
-    setDrinks(prev => {
-      const updatedDateGroup = prev[selectedDate] ? [...prev[selectedDate], newDrink] : [newDrink];
-      return {
-        ...prev,
-        [selectedDate]: updatedDateGroup
-      };
-    });
-    
-    setIsModalOpen(false);
+    const newRecords = { ...records, [selectedDate]: editData };
+    setRecords(newRecords);
+    saveToCloud(newRecords);
+    setModalOpen(false);
   };
 
-  const deleteDrink = (drinkId) => {
-    setDrinks(prev => {
-      const updatedGroup = prev[selectedDate].filter(d => d.id !== drinkId);
-      const newDrinks = { ...prev };
-      if (updatedGroup.length === 0) {
-        delete newDrinks[selectedDate];
-      } else {
-        newDrinks[selectedDate] = updatedGroup;
-      }
-      return newDrinks;
+  const handleDelete = () => {
+    const newRecords = { ...records };
+    delete newRecords[selectedDate];
+    setRecords(newRecords);
+    saveToCloud(newRecords);
+    setModalOpen(false);
+  };
+
+  // 統計邏輯
+  const stats = Object.values(records).reduce((acc, r) => {
+    const p = parseInt(r.price) || 0;
+    acc.totalSpent += p;
+    acc.totalCups += 1;
+    return acc;
+  }, { totalSpent: 0, totalCups: 0 });
+
+  const avgPrice = stats.totalCups > 0 ? Math.round(stats.totalSpent / stats.totalCups) : 0;
+
+  // 渲染日曆
+  const renderCalendar = () => {
+    // 產生 2026 全年月份
+    const range = Array.from({ length: 12 }, (_, i) => ({ y: 2026, m: i }));
+
+    return range.map(({y, m}) => {
+      const firstDay = new Date(y, m, 1).getDay();
+      const totalDays = new Date(y, m+1, 0).getDate();
+      const days = [];
+      for (let i = 0; i < firstDay; i++) days.push(null);
+      for (let i = 1; i <= totalDays; i++) days.push(i);
+
+      return (
+        <div key={`${y}-${m}`} className="bg-white p-5 rounded-3xl shadow-sm border border-orange-100">
+          <h4 className="font-black text-lg mb-3 text-orange-800">{y} / {m+1}月</h4>
+          <div className="grid grid-cols-7 gap-1 text-center mb-1">
+            {['日','一','二','三','四','五','六'].map(d => (
+              <div key={d} className="text-[10px] font-bold text-orange-300 uppercase">{d}</div>
+            ))}
+          </div>
+          <div className="grid grid-cols-7 gap-1">
+            {days.map((d, idx) => {
+              if (d === null) return <div key={`empty-${idx}`} />;
+              const dStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+              const isWk = (new Date(y,m,d).getDay() === 0 || new Date(y,m,d).getDay() === 6);
+              const record = records[dStr];
+
+              return (
+                <div 
+                  key={dStr}
+                  onClick={() => openModal(dStr)}
+                  className={`aspect-square flex flex-col items-center justify-start pt-1 cursor-pointer rounded-xl relative border transition-all hover:scale-110 active:scale-95
+                    ${record ? 'bg-orange-50 border-orange-400' : 'border-transparent hover:bg-slate-50'}
+                  `}
+                >
+                  <span className={`text-xs font-bold leading-none ${isWk && !record ? 'text-rose-400' : 'text-slate-600'}`}>{d}</span>
+                  {record && (
+                    <>
+                      <div className="text-lg mt-0.5">🧋</div>
+                      <div className="text-[8px] font-black text-orange-600 bg-white/80 px-1 rounded-full mt-auto mb-1 shadow-sm">
+                        ${record.price}
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
     });
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-orange-50">
-        <Loader2 className="w-10 h-10 text-orange-500 animate-spin" />
-      </div>
-    );
-  }
+  if (loading) return (
+    <div className="min-h-screen flex items-center justify-center bg-orange-50">
+      <div className="animate-spin rounded-full h-12 w-12 border-4 border-orange-200 border-t-orange-500"></div>
+    </div>
+  );
 
   return (
-    <div className="min-h-screen bg-orange-50 p-4 md:p-8 font-sans text-slate-800">
-      <div className="max-w-5xl mx-auto">
+    <div className="min-h-screen bg-orange-50 p-4 md:p-8 font-sans pb-24">
+      {statusMsg && (
+        <div className="fixed top-6 right-6 z-50 bg-slate-800 text-white px-6 py-3 rounded-2xl shadow-2xl animate-bounce font-bold">
+          {statusMsg}
+        </div>
+      )}
+
+      <div className="max-w-6xl mx-auto">
         {/* Header */}
-        <header className="flex flex-col md:flex-row md:items-center justify-between mb-8 bg-white p-6 rounded-3xl shadow-sm border border-orange-100">
-          <div className="flex items-center gap-4">
-            <div className="p-3 bg-orange-500 rounded-2xl text-white shadow-lg shadow-orange-200">
-              <Coffee className="w-8 h-8" />
+        <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-6 bg-white p-8 rounded-[2.5rem] shadow-xl border border-orange-100">
+          <div>
+            <div className="flex items-center gap-3 mb-2">
+              <span className="text-4xl">🥤</span>
+              <h1 className="text-3xl font-black text-slate-800">手搖統計 2026</h1>
             </div>
-            <div>
-              <h1 className="text-3xl font-black text-slate-800">手搖</h1>
-              <p className="text-xs text-slate-400 font-bold mt-1 uppercase tracking-widest">2026 Drink Diary</p>
-            </div>
+            <p className="text-slate-400 font-bold text-sm ml-1">雲端同步中 (ID: {user?.uid.slice(0,6)})</p>
           </div>
-          
-          <div className="flex gap-4 mt-6 md:mt-0">
-            <div className="bg-orange-100 px-5 py-3 rounded-2xl flex items-center gap-3">
-              <div className="p-2 bg-white rounded-xl text-orange-600 shadow-sm"><DollarSign className="w-5 h-5" /></div>
-              <div>
-                <p className="text-[10px] text-orange-700 font-bold uppercase opacity-60">本月花費</p>
-                <p className="text-2xl font-black text-orange-600">${stats.totalSpent}</p>
-              </div>
-            </div>
-            <div className="bg-blue-100 px-5 py-3 rounded-2xl flex items-center gap-3">
-              <div className="p-2 bg-white rounded-xl text-blue-600 shadow-sm"><PieChart className="w-5 h-5" /></div>
-              <div>
-                <p className="text-[10px] text-blue-700 font-bold uppercase opacity-60">飲用杯數</p>
-                <p className="text-2xl font-black text-blue-600">{stats.totalDrinks}</p>
-              </div>
-            </div>
+          <div className="flex gap-3 w-full md:w-auto overflow-x-auto pb-2 md:pb-0">
+            <StatCard label="年度總花費" val={`$${stats.totalSpent.toLocaleString()}`} color="bg-slate-800" />
+            <StatCard label="累積杯數" val={`${stats.totalCups} 杯`} color="bg-orange-500" />
+            <StatCard label="平均單價" val={`$${avgPrice}`} color="bg-amber-400" textColor="text-slate-900" />
           </div>
         </header>
 
-        {/* Calendar Controls */}
-        <div className="flex items-center justify-between mb-6 px-2">
-          <h2 className="text-2xl font-black text-slate-700 flex items-center gap-2">
-            {currentDate.getFullYear()} 年 {currentDate.getMonth() + 1} 月
-          </h2>
-          <div className="flex gap-2 bg-white p-1 rounded-2xl border border-slate-100 shadow-sm">
-            <button onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1))} className="p-2 hover:bg-orange-50 rounded-xl transition-colors">
-              <ChevronLeft className="w-6 h-6 text-slate-400" />
-            </button>
-            <button onClick={() => setCurrentDate(new Date(2026, currentDate.getMonth(), 1))} className="px-3 text-xs font-bold text-slate-400 hover:text-orange-500">2026</button>
-            <button onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1))} className="p-2 hover:bg-orange-50 rounded-xl transition-colors">
-              <ChevronRight className="w-6 h-6 text-slate-400" />
-            </button>
-          </div>
+        {/* Calendar Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5 mb-12">
+          {renderCalendar()}
         </div>
 
-        {/* Calendar Grid */}
-        <div className="grid grid-cols-7 gap-2 md:gap-3">
-          {['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map(day => (
-            <div key={day} className="text-center text-[10px] font-black text-slate-300 py-2 uppercase tracking-widest">{day}</div>
-          ))}
-          {calendarDays.map((date, index) => {
-            const dateKey = formatDateKey(date);
-            const dayDrinks = drinks[dateKey] || [];
-            const isToday = date && new Date().toDateString() === date.toDateString();
-            
-            return (
-              <div 
-                key={index} 
-                className={`min-h-[100px] md:min-h-[150px] bg-white rounded-3xl p-3 border border-slate-100 shadow-sm flex flex-col transition-all group ${!date ? 'bg-slate-50 opacity-20' : 'cursor-pointer hover:border-orange-200 hover:shadow-orange-100 hover:shadow-lg'}`}
-                onClick={() => date && openAddModal(date)}
-              >
-                {date && (
-                  <>
-                    <div className="flex justify-between items-start mb-2">
-                      <span className={`text-sm font-black ${isToday ? 'bg-orange-500 text-white w-6 h-6 flex items-center justify-center rounded-full' : (date.getDay() === 0 || date.getDay() === 6 ? 'text-red-400' : 'text-slate-400')}`}>
-                        {date.getDate()}
-                      </span>
-                      {dayDrinks.length > 0 && <div className="w-2 h-2 bg-orange-400 rounded-full animate-pulse" />}
-                    </div>
-                    <div className="flex-1 overflow-hidden space-y-1">
-                      {dayDrinks.slice(0, 3).map(drink => (
-                        <div key={drink.id} className="text-[10px] bg-orange-50 text-orange-700 px-2 py-1 rounded-lg border border-orange-100 truncate font-medium">
-                          {drink.shop}
-                        </div>
-                      ))}
-                      {dayDrinks.length > 3 && <div className="text-[9px] text-center text-slate-300 font-bold">+{dayDrinks.length - 3} 更多</div>}
-                    </div>
-                    <div className="mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <div className="w-full py-1 bg-slate-50 rounded-xl flex justify-center"><Plus className="w-4 h-4 text-slate-300" /></div>
-                    </div>
-                  </>
+        {/* Recent List */}
+        <div className="bg-white rounded-[2.5rem] shadow-xl border border-orange-100 overflow-hidden">
+          <div className="p-6 bg-orange-50/50 border-b border-orange-100 flex justify-between items-center">
+            <h2 className="text-xl font-black text-slate-800 tracking-tight">最近喝了什麼</h2>
+            <span className="text-xs font-bold text-orange-400 uppercase tracking-wider">Recent Records</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left min-w-[600px]">
+              <thead className="text-[11px] font-black text-slate-400 uppercase tracking-widest bg-slate-50">
+                <tr>
+                  <th className="px-6 py-4">日期</th>
+                  <th className="px-6 py-4">店家 / 品項</th>
+                  <th className="px-6 py-4">客製化</th>
+                  <th className="px-6 py-4">價格</th>
+                  <th className="px-6 py-4">備註</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {Object.keys(records).sort().reverse().map(d => (
+                  <tr key={d} onClick={() => openModal(d)} className="hover:bg-orange-50 cursor-pointer transition-colors group">
+                    <td className="px-6 py-4 font-bold text-slate-600">{d}</td>
+                    <td className="px-6 py-4">
+                      <div className="font-black text-slate-800">{records[d].shop}</div>
+                      <div className="text-xs text-slate-500 font-bold">{records[d].item}</div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex gap-1">
+                        <span className="px-2 py-1 bg-cyan-100 text-cyan-700 rounded-md text-[10px] font-bold">{records[d].ice}</span>
+                        <span className="px-2 py-1 bg-pink-100 text-pink-700 rounded-md text-[10px] font-bold">{records[d].sugar}</span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 font-black text-orange-500">${records[d].price}</td>
+                    <td className="px-6 py-4 text-slate-400 text-xs max-w-[150px] truncate">{records[d].note || '-'}</td>
+                  </tr>
+                ))}
+                {Object.keys(records).length === 0 && (
+                  <tr>
+                    <td colSpan="5" className="px-6 py-12 text-center text-slate-400 font-bold">目前還沒有紀錄，快去喝一杯吧！</td>
+                  </tr>
                 )}
-              </div>
-            );
-          })}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
-      {/* Modal */}
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-50">
-          <div className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl overflow-hidden max-h-[90vh] flex flex-col animate-in fade-in zoom-in duration-200">
-            <div className="bg-gradient-to-r from-orange-500 to-orange-600 p-8 text-white flex justify-between items-center">
-              <div>
-                <h3 className="text-2xl font-black">飲品記錄</h3>
-                <p className="text-orange-100 text-sm font-bold opacity-80 mt-1">{selectedDate}</p>
-              </div>
-              <button onClick={() => setIsModalOpen(false)} className="bg-white/20 hover:bg-white/40 w-10 h-10 rounded-full flex items-center justify-center transition-colors">✕</button>
+      {/* Edit Modal */}
+      {modalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm transition-all">
+          <div className="bg-white w-full max-w-md rounded-[2.5rem] p-6 md:p-8 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-2xl font-black text-slate-800">{selectedDate}</h3>
+              <button onClick={() => setModalOpen(false)} className="w-8 h-8 flex items-center justify-center bg-slate-100 rounded-full text-slate-400 hover:bg-slate-200">✕</button>
             </div>
+            
+            <div className="space-y-6">
+              {/* 店家與品項 */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-1">
+                  <label className="label-text">店家名稱</label>
+                  <input 
+                    type="text" 
+                    placeholder="例如: 50嵐"
+                    value={editData.shop}
+                    onChange={(e) => setEditData({...editData, shop: e.target.value})}
+                    className="input-field"
+                    autoFocus
+                  />
+                </div>
+                <div className="col-span-1">
+                  <label className="label-text">價格</label>
+                  <input 
+                    type="number" 
+                    placeholder="$"
+                    value={editData.price}
+                    onChange={(e) => setEditData({...editData, price: e.target.value})}
+                    className="input-field font-mono"
+                  />
+                </div>
+              </div>
+              
+              <div>
+                <label className="label-text">飲料品項</label>
+                <input 
+                  type="text" 
+                  placeholder="例如: 四季春珍波椰"
+                  value={editData.item}
+                  onChange={(e) => setEditData({...editData, item: e.target.value})}
+                  className="input-field"
+                />
+              </div>
 
-            <div className="p-8 overflow-y-auto space-y-8">
-              {/* 目前已有的飲品列表 */}
-              {drinks[selectedDate] && (
-                <div className="space-y-3">
-                  <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest">今日清單</h4>
-                  {drinks[selectedDate].map(drink => (
-                    <div key={drink.id} className="flex items-center justify-between bg-slate-50 p-4 rounded-2xl border border-slate-100 group">
-                      <div>
-                        <p className="font-black text-slate-700">{drink.shop} <span className="text-orange-500 mx-1">/</span> {drink.item}</p>
-                        <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">{drink.ice} · {drink.sugar} · ${drink.price}</p>
-                      </div>
-                      <button onClick={(e) => { e.stopPropagation(); deleteDrink(drink.id); }} className="text-slate-300 hover:text-red-500 p-2 transition-colors">
-                        <Trash2 className="w-5 h-5" />
-                      </button>
-                    </div>
+              {/* 冰塊選擇 */}
+              <div>
+                <label className="label-text mb-2 block">冰塊</label>
+                <div className="grid grid-cols-4 gap-2">
+                  {iceOptions.map(opt => (
+                    <button
+                      key={opt}
+                      onClick={() => setEditData({...editData, ice: opt})}
+                      className={`py-2 rounded-xl text-xs font-bold transition-all border-2
+                        ${editData.ice === opt 
+                          ? 'bg-cyan-500 border-cyan-500 text-white shadow-md shadow-cyan-200' 
+                          : 'border-slate-100 text-slate-400 hover:border-cyan-200 hover:text-cyan-400'}`}
+                    >
+                      {opt}
+                    </button>
                   ))}
                 </div>
-              )}
+              </div>
 
-              {/* 表單內容 */}
-              <div className="space-y-6 pt-4 border-t border-slate-100">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">店名</label>
-                    <input className="w-full bg-slate-50 border-2 border-transparent focus:border-orange-500 focus:bg-white rounded-2xl px-5 py-3 outline-none transition-all font-bold" placeholder="例如：得正" value={formData.shop} onChange={e => setFormData({...formData, shop: e.target.value})} />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">品項</label>
-                    <input className="w-full bg-slate-50 border-2 border-transparent focus:border-orange-500 focus:bg-white rounded-2xl px-5 py-3 outline-none transition-all font-bold" placeholder="檸檬春烏龍" value={formData.item} onChange={e => setFormData({...formData, item: e.target.value})} />
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">冰塊</label>
-                  <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
-                    {iceOptions.map(opt => (
-                      <button key={opt} onClick={() => setFormData({...formData, ice: opt})} className={`py-3 text-xs font-bold rounded-xl border-2 transition-all ${formData.ice === opt ? 'bg-orange-500 border-orange-500 text-white shadow-lg shadow-orange-100' : 'bg-white border-slate-100 text-slate-400 hover:border-orange-200 hover:text-orange-500'}`}>{opt}</button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">甜度</label>
-                  <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
-                    {sugarOptions.map(opt => (
-                      <button key={opt} onClick={() => setFormData({...formData, sugar: opt})} className={`py-3 text-xs font-bold rounded-xl border-2 transition-all ${formData.sugar === opt ? 'bg-orange-500 border-orange-500 text-white shadow-lg shadow-orange-100' : 'bg-white border-slate-100 text-slate-400 hover:border-orange-200 hover:text-orange-500'}`}>{opt}</button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">價格</label>
-                    <input type="number" className="w-full bg-slate-50 border-2 border-transparent focus:border-orange-500 focus:bg-white rounded-2xl px-5 py-3 outline-none transition-all font-bold" placeholder="$" value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} />
-                  </div>
-                  <div className="col-span-2 space-y-2">
-                    <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">備註</label>
-                    <input className="w-full bg-slate-50 border-2 border-transparent focus:border-orange-500 focus:bg-white rounded-2xl px-5 py-3 outline-none transition-all font-bold" placeholder="加波霸、不要袋子..." value={formData.note} onChange={e => setFormData({...formData, note: e.target.value})} />
-                  </div>
+              {/* 甜度選擇 */}
+              <div>
+                <label className="label-text mb-2 block">甜度</label>
+                <div className="grid grid-cols-4 gap-2">
+                  {sugarOptions.map(opt => (
+                    <button
+                      key={opt}
+                      onClick={() => setEditData({...editData, sugar: opt})}
+                      className={`py-2 rounded-xl text-xs font-bold transition-all border-2
+                        ${editData.sugar === opt 
+                          ? 'bg-pink-500 border-pink-500 text-white shadow-md shadow-pink-200' 
+                          : 'border-slate-100 text-slate-400 hover:border-pink-200 hover:text-pink-400'}`}
+                    >
+                      {opt}
+                    </button>
+                  ))}
                 </div>
               </div>
-            </div>
 
-            <div className="p-8 bg-slate-50 border-t border-slate-100 flex gap-4">
-              <button onClick={() => setIsModalOpen(false)} className="flex-1 py-4 rounded-2xl bg-white border-2 border-slate-200 font-black text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-all">取消</button>
-              <button onClick={saveDrink} className="flex-[2] py-4 rounded-2xl bg-orange-600 font-black text-white shadow-xl shadow-orange-200 hover:bg-orange-700 hover:-translate-y-1 active:translate-y-0 transition-all">儲存這份快樂 ✨</button>
+              <div>
+                <label className="label-text">備註 / 心得</label>
+                <textarea 
+                  value={editData.note}
+                  onChange={(e) => setEditData({...editData, note: e.target.value})}
+                  className="input-field h-20 resize-none"
+                  placeholder="好喝嗎？"
+                />
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button onClick={handleSave} className="flex-[2] bg-slate-900 text-white py-4 rounded-2xl font-black shadow-xl hover:bg-black transition-all active:scale-95">
+                  儲存
+                </button>
+                {records[selectedDate] && (
+                  <button onClick={handleDelete} className="flex-1 bg-rose-50 text-rose-500 py-4 rounded-2xl font-black hover:bg-rose-100 transition-all">
+                    刪除
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
       )}
+
+      <style>{`
+        .label-text {
+          display: block;
+          font-size: 0.75rem;
+          font-weight: 900;
+          color: #94a3b8;
+          text-transform: uppercase;
+          margin-bottom: 0.5rem;
+        }
+        .input-field {
+          width: 100%;
+          background-color: #f8fafc;
+          border: 1px solid transparent;
+          border-radius: 1rem;
+          padding: 1rem;
+          font-weight: 700;
+          color: #334155;
+          transition: all 0.2s;
+        }
+        .input-field:focus {
+          outline: none;
+          background-color: #fff;
+          border-color: #fb923c;
+          box-shadow: 0 0 0 4px rgba(251, 146, 60, 0.1);
+        }
+      `}</style>
     </div>
   );
-};
+}
 
-export default App;
+function StatCard({ label, val, color, textColor = 'text-white' }) {
+  return (
+    <div className={`${color} min-w-[120px] flex-1 p-5 rounded-3xl shadow-lg flex flex-col justify-center items-start`}>
+      <div className={`text-[10px] font-black uppercase opacity-60 mb-1 ${textColor}`}>{label}</div>
+      <div className={`text-2xl font-black ${textColor}`}>{val}</div>
+    </div>
+  );
+}
