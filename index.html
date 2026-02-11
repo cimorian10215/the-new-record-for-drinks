@@ -1,41 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Calendar, ChevronLeft, ChevronRight, Plus, Trash2, 
-  PieChart, DollarSign, Coffee, Loader2, Cloud
+  PieChart, DollarSign, Coffee, Loader2 
 } from 'lucide-react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { 
-  getFirestore, collection, doc, addDoc, deleteDoc, 
-  onSnapshot, query, serverTimestamp 
-} from 'firebase/firestore';
-
-const app = initializeApp(firebaseConfig);
-
-import { initializeApp } from "firebase/app";
-import { getAnalytics } from "firebase/analytics";
-
-const firebaseConfig = {
-  apiKey: "AIzaSyAN6cKHHdtmSspoA9tOxH9VnWhczImhOlQ",
-  authDomain: "the-new-record-for-drinks.firebaseapp.com",
-  projectId: "the-new-record-for-drinks",
-  storageBucket: "the-new-record-for-drinks.firebasestorage.app",
-  messagingSenderId: "661434625679",
-  appId: "1:661434625679:web:abe48c7a229e59a3334afa",
-  measurementId: "G-T97XT0CMWQ"
-};
-
-// Initialize Firebase
-const analytics = getAnalytics(app);
-
-// 初始化 Firebase
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'drink-tracker-2026';
 
 const App = () => {
-  const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [currentDate, setCurrentDate] = useState(new Date(2026, 0, 1));
   const [drinks, setDrinks] = useState({});
@@ -55,53 +24,25 @@ const App = () => {
   const iceOptions = ['正常', '少冰', '微冰', '去冰', '常溫', '溫'];
   const sugarOptions = ['全糖', '少糖', '半糖', '微糖', '一分糖', '無糖'];
 
-  // 1. 處理身份驗證 (使用匿名登入以實現雲端同步)
+  // 初始化：從 localStorage 讀取資料
   useEffect(() => {
-    const initAuth = async () => {
+    const savedDrinks = localStorage.getItem('drink_tracker_data');
+    if (savedDrinks) {
       try {
-        // 如果環境有提供 token 則使用，否則匿名登入
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          // signInWithCustomToken 需要從 firebase/auth 導入，這裡簡化處理
-        } else {
-          await signInAnonymously(auth);
-        }
+        setDrinks(JSON.parse(savedDrinks));
       } catch (error) {
-        console.error("Firebase 認證失敗:", error);
+        console.error("讀取儲存資料失敗:", error);
       }
-    };
-
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      if (!currentUser) setLoading(false);
-    });
-    return () => unsubscribe();
+    }
+    setLoading(false);
   }, []);
 
-  // 2. 實時從 Firestore 同步資料
+  // 當 drinks 改變時，存入 localStorage
   useEffect(() => {
-    if (!user) return;
-
-    // 依照規定路徑存取資料: /artifacts/{appId}/users/{userId}/drinks
-    const drinksCollection = collection(db, 'artifacts', appId, 'users', user.uid, 'drinks');
-    
-    const unsubscribe = onSnapshot(drinksCollection, (snapshot) => {
-      const data = {};
-      snapshot.forEach((doc) => {
-        const drink = { ...doc.data(), id: doc.id };
-        const dateKey = drink.dateKey;
-        if (!data[dateKey]) data[dateKey] = [];
-        data[dateKey].push(drink);
-      });
-      setDrinks(data);
-      setLoading(false);
-    }, (error) => {
-      console.error("Firestore 同步錯誤:", error);
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, [user]);
+    if (!loading) {
+      localStorage.setItem('drink_tracker_data', JSON.stringify(drinks));
+    }
+  }, [drinks, loading]);
 
   // 日曆計算邏輯
   const calendarDays = useMemo(() => {
@@ -144,44 +85,46 @@ const App = () => {
     setIsModalOpen(true);
   };
 
-  const saveDrink = async () => {
-    if (!user) return;
+  const saveDrink = () => {
     if (!formData.shop || !formData.item) {
-      alert('請填寫店名與品項！');
+      alert('請至少填寫店名與品項！');
       return;
     }
 
-    try {
-      const drinksCollection = collection(db, 'artifacts', appId, 'users', user.uid, 'drinks');
-      await addDoc(drinksCollection, {
-        ...formData,
-        dateKey: selectedDate,
-        createdAt: serverTimestamp()
-      });
-      setIsModalOpen(false);
-    } catch (error) {
-      console.error("儲存失敗:", error);
-      alert("同步至雲端失敗，請檢查網路連接。");
-    }
+    const newDrink = {
+      ...formData,
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString()
+    };
+
+    setDrinks(prev => {
+      const updatedDateGroup = prev[selectedDate] ? [...prev[selectedDate], newDrink] : [newDrink];
+      return {
+        ...prev,
+        [selectedDate]: updatedDateGroup
+      };
+    });
+    
+    setIsModalOpen(false);
   };
 
-  const deleteDrink = async (drinkId) => {
-    if (!user) return;
-    try {
-      const drinkDoc = doc(db, 'artifacts', appId, 'users', user.uid, 'drinks', drinkId);
-      await deleteDoc(drinkDoc);
-    } catch (error) {
-      console.error("刪除失敗:", error);
-    }
+  const deleteDrink = (drinkId) => {
+    setDrinks(prev => {
+      const updatedGroup = prev[selectedDate].filter(d => d.id !== drinkId);
+      const newDrinks = { ...prev };
+      if (updatedGroup.length === 0) {
+        delete newDrinks[selectedDate];
+      } else {
+        newDrinks[selectedDate] = updatedGroup;
+      }
+      return newDrinks;
+    });
   };
 
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-orange-50">
-        <div className="text-center">
-          <Loader2 className="w-10 h-10 text-orange-500 animate-spin mx-auto mb-4" />
-          <p className="text-orange-600 font-bold animate-pulse">雲端資料同步中...</p>
-        </div>
+        <Loader2 className="w-10 h-10 text-orange-500 animate-spin" />
       </div>
     );
   }
@@ -197,10 +140,7 @@ const App = () => {
             </div>
             <div>
               <h1 className="text-3xl font-black text-slate-800">手搖統計</h1>
-              <div className="flex items-center gap-2 mt-1">
-                <Cloud className="w-3 h-3 text-green-500" />
-                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">已連接雲端同步</p>
-              </div>
+              <p className="text-xs text-slate-400 font-bold mt-1 uppercase tracking-widest">2026 Drink Diary</p>
             </div>
           </div>
           
@@ -281,7 +221,7 @@ const App = () => {
         </div>
       </div>
 
-      {/* Modal (表單部分保持不變) */}
+      {/* Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-50">
           <div className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl overflow-hidden max-h-[90vh] flex flex-col animate-in fade-in zoom-in duration-200">
@@ -294,6 +234,7 @@ const App = () => {
             </div>
 
             <div className="p-8 overflow-y-auto space-y-8">
+              {/* 目前已有的飲品列表 */}
               {drinks[selectedDate] && (
                 <div className="space-y-3">
                   <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest">今日清單</h4>
@@ -311,6 +252,7 @@ const App = () => {
                 </div>
               )}
 
+              {/* 表單內容 */}
               <div className="space-y-6 pt-4 border-t border-slate-100">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
