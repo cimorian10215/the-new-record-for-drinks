@@ -32,12 +32,13 @@ import {
 const firebaseConfig = typeof __firebase_config !== 'undefined' 
   ? JSON.parse(__firebase_config) 
   : {
-      apiKey: "",
-      authDomain: "your-app.firebaseapp.com",
-      projectId: "your-app",
-      storageBucket: "your-app.appspot.com",
-      messagingSenderId: "123456789",
-      appId: "1:123456789:web:abc123"
+      apiKey: "AIzaSyAN6cKHHdtmSspoA9tOxH9VnWhczImhOlQ",
+      authDomain: "the-new-record-for-drinks.firebaseapp.com",
+      projectId: "the-new-record-for-drinks",
+      storageBucket: "the-new-record-for-drinks.firebasestorage.app",
+      messagingSenderId: "661434625679",
+      appId: "1:661434625679:web:abe48c7a229e59a3334afa",
+      measurementId: "G-T97XT0CMWQ"
     };
 
 const app = initializeApp(firebaseConfig);
@@ -223,7 +224,7 @@ const App = () => {
               <Coffee className="w-8 h-8" />
             </div>
             <div>
-              <h1 className="text-3xl font-black text-slate-800">我超愛喝手搖</h1>
+              <h1 className="text-3xl font-black text-slate-800">手搖紀錄</h1>
               <div className="flex items-center gap-2 mt-1">
                 {user ? (
                   <div className="flex items-center gap-2 bg-green-50 px-2 py-1 rounded-lg border border-green-100">
