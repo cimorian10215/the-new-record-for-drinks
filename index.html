@@ -3,20 +3,31 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>手搖統計 2026 智慧選單版</title>
+    <title>手搖統計 2026 數據分析版</title>
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; }
+        .custom-scroll::-webkit-scrollbar { width: 4px; }
+        .custom-scroll::-webkit-scrollbar-track { background: transparent; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+    </style>
 </head>
 <body class="bg-orange-50 min-h-screen">
     <div id="root"></div>
 
+    <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
-        // --- 請填入您自己的 Firebase 配置 ---
+        // --- 已幫你整合你提供的 Firebase 配置 ---
         const firebaseConfig = {
             apiKey: "AIzaSyAN6cKHHdtmSspoA9tOxH9VnWhczImhOlQ",
             authDomain: "the-new-record-for-drinks.firebaseapp.com",
@@ -26,9 +37,13 @@
             appId: "1:661434625679:web:abe48c7a229e59a3334afa"
         };
 
-        const app = initializeApp(firebaseConfig);
-        window.fbDb = getFirestore(app);
-        window.fbMethods = { doc, setDoc, onSnapshot, getDoc };
+        try {
+            const app = initializeApp(firebaseConfig);
+            window.fbDb = getFirestore(app);
+            window.fbMethods = { doc, setDoc, onSnapshot };
+        } catch (e) {
+            console.error("Firebase Init Error:", e);
+        }
     </script>
 
     <script type="text/babel">
@@ -38,52 +53,73 @@
             const [syncKey, setSyncKey] = useState(localStorage.getItem('drink_sync_key') || '');
             const [records, setRecords] = useState({});
             const [loading, setLoading] = useState(false);
+            const [activeTab, setActiveTab] = useState('calendar'); // 差異點：新增分頁狀態
             const [modalOpen, setModalOpen] = useState(false);
             const [selectedDate, setSelectedDate] = useState('');
             const [statusMsg, setStatusMsg] = useState('');
             
-            // 編輯中的多杯列表
             const [editingDrinks, setEditingDrinks] = useState([]);
-            // 控制哪一杯的店家下拉選單正被打開
             const [openDropdownIdx, setOpenDropdownIdx] = useState(null);
 
             const iceOptions = ['正常', '少冰', '微冰', '去冰', '常溫', '溫', '固定'];
             const sugarOptions = ['全糖', '少糖', '半糖', '微糖', '一分', '無糖', '固定'];
 
-            // 智慧店家資料庫：從現有紀錄中抓取不重複的店名
+            // --- 數據統計邏輯 (差異點：新版核心運算區) ---
+            
+            // 1. 店家自動建議清單
             const shopDatabase = useMemo(() => {
                 const shops = new Set();
-                Object.values(records).flat().forEach(r => {
-                    if (r && r.shop) shops.add(r.shop.trim());
-                });
+                Object.values(records).flat().forEach(r => { if (r && r.shop) shops.add(r.shop.trim()); });
                 return Array.from(shops).sort();
             }, [records]);
 
-            // 隨機產生金鑰
-            const generateKey = () => {
-                const key = Math.random().toString(36).substring(2, 10).toUpperCase();
-                setSyncKey(key);
-                localStorage.setItem('drink_sync_key', key);
-            };
+            // 2. 店家消費排行與明細 (差異點：統計分頁用)
+            const shopStats = useMemo(() => {
+                const stats = {};
+                Object.entries(records).forEach(([date, drinks]) => {
+                    drinks.forEach(d => {
+                        if (!stats[d.shop]) stats[d.shop] = { totalSpent: 0, count: 0, items: [] };
+                        stats[d.shop].totalSpent += (parseInt(d.price) || 0);
+                        stats[d.shop].count += 1;
+                        stats[d.shop].items.push({ date, ...d });
+                    });
+                });
+                return Object.entries(stats).sort((a, b) => b[1].totalSpent - a[1].totalSpent);
+            }, [records]);
 
-            // 監聽雲端資料
+            // 3. 每月財務總結 (差異點：統計分頁用)
+            const monthlyStats = useMemo(() => {
+                const months = {};
+                Object.entries(records).forEach(([date, drinks]) => {
+                    const monthKey = date.substring(0, 7); // YYYY-MM
+                    if (!months[monthKey]) months[monthKey] = { totalSpent: 0, count: 0 };
+                    drinks.forEach(d => {
+                        months[monthKey].totalSpent += (parseInt(d.price) || 0);
+                        months[monthKey].count += 1;
+                    });
+                });
+                return Object.entries(months).sort().reverse();
+            }, [records]);
+
+            const totalStats = useMemo(() => {
+                return Object.values(records).flat().reduce((acc, r) => {
+                    acc.totalSpent += (parseInt(r.price) || 0);
+                    acc.totalCups += 1;
+                    return acc;
+                }, { totalSpent: 0, totalCups: 0 });
+            }, [records]);
+
+            // --- 功能邏輯 ---
+
             useEffect(() => {
                 if (!syncKey || !window.fbDb) return;
                 setLoading(true);
                 const { doc, onSnapshot } = window.fbMethods;
                 const docRef = doc(window.fbDb, 'drink_v2', syncKey);
-                
                 const unsubscribe = onSnapshot(docRef, (docSnap) => {
-                    if (docSnap.exists()) {
-                        setRecords(docSnap.data().records || {});
-                    } else {
-                        setRecords({});
-                    }
+                    if (docSnap.exists()) setRecords(docSnap.data().records || {});
                     setLoading(false);
-                }, (err) => {
-                    console.error(err);
-                    setLoading(false);
-                });
+                }, (err) => { console.error(err); setLoading(false); });
                 return () => unsubscribe();
             }, [syncKey]);
 
@@ -91,58 +127,35 @@
                 if (!syncKey) return;
                 const { doc, setDoc } = window.fbMethods;
                 try {
-                    const docRef = doc(window.fbDb, 'drink_v2', syncKey);
-                    await setDoc(docRef, { records: newRecords });
-                    setStatusMsg('✅ 雲端同步中');
+                    await setDoc(doc(window.fbDb, 'drink_v2', syncKey), { records: newRecords });
+                    setStatusMsg('✅ 雲端同步成功');
                     setTimeout(() => setStatusMsg(''), 2000);
-                } catch (err) {
-                    alert('同步失敗: ' + err.message);
-                }
+                } catch (err) { alert('同步失敗: ' + err.message); }
             };
 
             const openModal = (date) => {
                 setSelectedDate(date);
-                const existing = records[date] || [{ shop: '', item: '', price: '', ice: '少冰', sugar: '微糖', id: Date.now() }];
-                setEditingDrinks(JSON.parse(JSON.stringify(existing)));
+                setEditingDrinks(records[date] ? JSON.parse(JSON.stringify(records[date])) : [{ shop: '', item: '', price: '', ice: '少冰', sugar: '微糖', id: Date.now() }]);
                 setModalOpen(true);
                 setOpenDropdownIdx(null);
-            };
-
-            const addDrinkField = () => {
-                setEditingDrinks([...editingDrinks, { shop: '', item: '', price: '', ice: '少冰', sugar: '微糖', id: Date.now() }]);
-            };
-
-            const removeDrinkField = (index) => {
-                const updated = editingDrinks.filter((_, i) => i !== index);
-                setEditingDrinks(updated);
-            };
-
-            const handleUpdateDrink = (index, field, value) => {
-                const updated = [...editingDrinks];
-                updated[index][field] = value;
-                setEditingDrinks(updated);
             };
 
             const handleSave = () => {
                 const validDrinks = editingDrinks.filter(d => d.shop.trim() !== '');
                 const newRecords = { ...records };
-                if (validDrinks.length > 0) {
-                    newRecords[selectedDate] = validDrinks;
-                } else {
-                    delete newRecords[selectedDate];
-                }
+                if (validDrinks.length > 0) newRecords[selectedDate] = validDrinks;
+                else delete newRecords[selectedDate];
                 setRecords(newRecords);
                 saveToCloud(newRecords);
                 setModalOpen(false);
             };
 
-            const stats = Object.values(records).flat().reduce((acc, r) => {
-                acc.totalSpent += (parseInt(r.price) || 0);
-                acc.totalCups += 1;
-                return acc;
-            }, { totalSpent: 0, totalCups: 0 });
+            const generateKey = () => {
+                const key = Math.random().toString(36).substring(2, 10).toUpperCase();
+                setSyncKey(key);
+                localStorage.setItem('drink_sync_key', key);
+            };
 
-            // 點擊外部關閉選單
             useEffect(() => {
                 const closeDrop = () => setOpenDropdownIdx(null);
                 window.addEventListener('click', closeDrop);
@@ -152,181 +165,217 @@
             if (!syncKey) {
                 return (
                     <div className="flex h-screen items-center justify-center p-6 text-center">
-                        <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl max-w-sm border border-orange-100">
-                            <div className="text-6xl mb-4">🧋</div>
-                            <h2 className="text-2xl font-black text-slate-800 mb-2">啟動同步功能</h2>
-                            <p className="text-slate-500 text-sm mb-6 font-medium">請輸入您的個人密鑰，或產生一個新密鑰以開始跨裝置同步。</p>
-                            <input 
-                                type="text" 
-                                placeholder="輸入 8 位密鑰" 
-                                className="w-full p-4 bg-slate-50 rounded-2xl mb-4 text-center font-mono font-bold uppercase outline-none focus:ring-2 focus:ring-orange-400"
-                                id="keyInput"
-                            />
-                            <button 
-                                onClick={() => {
-                                    const val = document.getElementById('keyInput').value.toUpperCase().trim();
-                                    if(val) { setSyncKey(val); localStorage.setItem('drink_sync_key', val); }
-                                }}
-                                className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black mb-2 shadow-lg"
-                            >
-                                進入我的紀錄
-                            </button>
-                            <button 
-                                onClick={generateKey}
-                                className="w-full bg-orange-100 text-orange-600 py-4 rounded-2xl font-black"
-                            >
-                                產生新密鑰
-                            </button>
+                        <div className="bg-white p-10 rounded-[3rem] shadow-2xl max-w-sm border border-orange-100">
+                            <div className="text-7xl mb-6">🧋</div>
+                            <h2 className="text-3xl font-black text-slate-800 mb-2">手搖統計 2026</h2>
+                            <p className="text-slate-400 font-medium mb-8">跨裝置同步，記錄每一份清爽</p>
+                            <input type="text" placeholder="輸入 8 位密鑰" className="w-full p-4 bg-slate-50 rounded-2xl mb-4 text-center font-mono font-bold uppercase outline-none focus:ring-2 focus:ring-orange-400" id="keyInput" />
+                            <button onClick={() => { const val = document.getElementById('keyInput').value.toUpperCase().trim(); if(val) { setSyncKey(val); localStorage.setItem('drink_sync_key', val); } }} className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black mb-3 shadow-xl hover:bg-black transition-all">進入我的紀錄</button>
+                            <button onClick={generateKey} className="w-full bg-orange-100 text-orange-600 py-4 rounded-2xl font-black hover:bg-orange-200 transition-all">產生新密鑰</button>
                         </div>
                     </div>
                 );
             }
 
             return (
-                <div className="p-4 md:p-8 max-w-6xl mx-auto pb-20">
-                    {statusMsg && (
-                        <div className="fixed top-4 right-4 bg-emerald-500 text-white px-6 py-3 rounded-2xl shadow-lg z-[100] font-bold animate-bounce text-sm">
-                            {statusMsg}
-                        </div>
-                    )}
+                <div className="p-4 md:p-8 max-w-6xl mx-auto pb-32">
+                    {statusMsg && <div className="fixed top-6 right-6 bg-emerald-500 text-white px-6 py-3 rounded-2xl shadow-xl z-[100] font-black animate-bounce text-sm">{statusMsg}</div>}
                     
-                    <header className="bg-white p-6 rounded-[2rem] shadow-xl mb-8 flex flex-col md:flex-row justify-between items-center gap-6 border border-orange-100">
+                    {/* Header */}
+                    <header className="bg-white p-8 rounded-[2.5rem] shadow-xl mb-8 flex flex-col md:flex-row justify-between items-center gap-6 border border-orange-100">
                         <div className="text-center md:text-left">
-                            <h1 className="text-3xl font-black text-slate-800 flex items-center gap-2 justify-center md:justify-start">🧋 手搖統計 2026</h1>
-                            <div className="mt-2 flex items-center gap-2 text-[10px] font-bold text-slate-400 bg-slate-50 px-3 py-1 rounded-full border">
-                                🔑 同步密鑰：<span className="text-orange-500 font-mono select-all cursor-pointer" title="點擊可選取複製">{syncKey}</span>
+                            <h1 className="text-4xl font-black text-slate-800 tracking-tight">手搖統計 <span className="text-orange-500">2026</span></h1>
+                            <div className="mt-3 flex items-center gap-2 text-[11px] font-black text-slate-400 bg-slate-50 px-4 py-1.5 rounded-full border border-slate-100 w-fit mx-auto md:mx-0">
+                                🔑 密鑰：<span className="text-orange-600 font-mono select-all cursor-pointer">{syncKey}</span>
                             </div>
                         </div>
                         <div className="flex gap-4 w-full md:w-auto">
-                            <div className="flex-1 bg-slate-900 text-white p-4 rounded-2xl text-center min-w-[120px] shadow-lg">
-                                <div className="text-[10px] font-black opacity-50 uppercase tracking-tighter">年度總支出</div>
-                                <div className="text-2xl font-black">${stats.totalSpent}</div>
+                            <div className="flex-1 bg-slate-900 text-white p-5 rounded-3xl text-center shadow-lg min-w-[130px]">
+                                <div className="text-[10px] font-black opacity-40 uppercase tracking-widest mb-1">年度總花費</div>
+                                <div className="text-3xl font-black">${totalStats.totalSpent}</div>
                             </div>
-                            <div className="flex-1 bg-orange-500 text-white p-4 rounded-2xl text-center min-w-[120px] shadow-lg">
-                                <div className="text-[10px] font-black opacity-50 uppercase tracking-tighter">累積杯數</div>
-                                <div className="text-2xl font-black">{stats.totalCups}</div>
+                            <div className="flex-1 bg-orange-500 text-white p-5 rounded-3xl text-center shadow-lg min-w-[130px]">
+                                <div className="text-[10px] font-black opacity-40 uppercase tracking-widest mb-1">累積杯數</div>
+                                <div className="text-3xl font-black">{totalStats.totalCups}</div>
                             </div>
                         </div>
                     </header>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                        {[...Array(12).keys()].map(m => {
-                            const days = [];
-                            const firstDay = new Date(2026, m, 1).getDay();
-                            const totalDays = new Date(2026, m+1, 0).getDate();
-                            for(let i=0; i<firstDay; i++) days.push(null);
-                            for(let i=1; i<=totalDays; i++) days.push(i);
+                    {/* 差異點：分頁切換導覽 */}
+                    <nav className="flex bg-white/60 backdrop-blur-sm p-2 rounded-2xl mb-10 w-fit mx-auto border border-orange-100 shadow-sm sticky top-4 z-40">
+                        <button onClick={() => setActiveTab('calendar')} className={`px-10 py-3 rounded-xl text-sm font-black transition-all ${activeTab === 'calendar' ? 'bg-white text-slate-900 shadow-md' : 'text-slate-400 hover:text-slate-600'}`}>
+                            📅 日曆模式
+                        </button>
+                        <button onClick={() => setActiveTab('stats')} className={`px-10 py-3 rounded-xl text-sm font-black transition-all ${activeTab === 'stats' ? 'bg-white text-slate-900 shadow-md' : 'text-slate-400 hover:text-slate-600'}`}>
+                            📊 數據統計
+                        </button>
+                    </nav>
 
-                            return (
-                                <div key={m} className="bg-white p-5 rounded-3xl shadow-sm border border-orange-50">
-                                    <h3 className="font-black text-orange-800 mb-3 text-lg">2026 / {m+1}月</h3>
-                                    <div className="grid grid-cols-7 gap-1 text-[10px] font-black text-center text-slate-300 mb-2">
-                                        {['日','一','二','三','四','五','六'].map(w => <div key={w}>{w}</div>)}
+                    {activeTab === 'calendar' ? (
+                        /* 日曆視圖 */
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                            {[...Array(12).keys()].map(m => {
+                                const days = [];
+                                const firstDay = new Date(2026, m, 1).getDay();
+                                const totalDays = new Date(2026, m+1, 0).getDate();
+                                for(let i=0; i<firstDay; i++) days.push(null);
+                                for(let i=1; i<=totalDays; i++) days.push(i);
+                                return (
+                                    <div key={m} className="bg-white p-6 rounded-[2rem] shadow-sm border border-orange-50">
+                                        <h3 className="font-black text-orange-800 mb-4 text-xl tracking-tight">{m+1}月</h3>
+                                        <div className="grid grid-cols-7 gap-1 text-[11px] font-black text-center text-slate-300 mb-3">
+                                            {['日','一','二','三','四','五','六'].map(w => <div key={w}>{w}</div>)}
+                                        </div>
+                                        <div className="grid grid-cols-7 gap-2">
+                                            {days.map((d, idx) => {
+                                                if(!d) return <div key={idx}/>;
+                                                const dStr = `2026-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+                                                const dayDrinks = records[dStr] || [];
+                                                const dayTotal = dayDrinks.reduce((sum, item) => sum + (parseInt(item.price) || 0), 0);
+                                                return (
+                                                    <div 
+                                                        key={dStr} 
+                                                        onClick={() => openModal(dStr)} 
+                                                        className={`aspect-square flex flex-col items-center justify-center rounded-xl cursor-pointer transition-all border relative hover:scale-110 active:scale-95
+                                                        ${dayDrinks.length > 0 ? 'bg-orange-500 border-orange-600 text-white shadow-md' : 'border-transparent text-slate-400 hover:bg-orange-50'}`}
+                                                    >
+                                                        <span className="text-xs font-black">{d}</span>
+                                                        {dayDrinks.length > 0 && (
+                                                            <span className="text-[8px] font-black absolute bottom-1 leading-none">
+                                                                {dayDrinks.length > 1 ? `x${dayDrinks.length}` : `$${dayTotal}`}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
                                     </div>
-                                    <div className="grid grid-cols-7 gap-1.5">
-                                        {days.map((d, idx) => {
-                                            if(!d) return <div key={idx}/>;
-                                            const dStr = `2026-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-                                            const dayDrinks = records[dStr] || [];
-                                            const dayTotal = dayDrinks.reduce((sum, item) => sum + (parseInt(item.price) || 0), 0);
-                                            
-                                            return (
-                                                <div 
-                                                    key={dStr} 
-                                                    onClick={() => openModal(dStr)} 
-                                                    className={`aspect-square flex flex-col items-center justify-center rounded-xl cursor-pointer transition-all hover:scale-110 active:scale-95 border relative
-                                                    ${dayDrinks.length > 0 ? 'bg-orange-500 border-orange-600 text-white shadow-md shadow-orange-100' : 'border-transparent text-slate-400 hover:bg-orange-50'}`}
-                                                >
-                                                    <span className="text-xs font-bold">{d}</span>
-                                                    {dayDrinks.length > 0 && (
-                                                        <span className="text-[7px] font-black absolute bottom-1 truncate px-0.5 w-full text-center">
-                                                            {dayDrinks.length > 1 ? `x${dayDrinks.length}` : `$${dayTotal}`}
-                                                        </span>
-                                                    )}
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        /* 差異點：數據統計視圖 */
+                        <div className="space-y-16 animate-in fade-in slide-in-from-bottom-6 duration-500">
+                            {/* 月度分析報表 */}
+                            <section>
+                                <div className="flex items-center gap-3 mb-8">
+                                    <div className="w-2 h-8 bg-orange-400 rounded-full"></div>
+                                    <h2 className="text-2xl font-black text-slate-800 tracking-tight">月度財務報表</h2>
                                 </div>
-                            );
-                        })}
-                    </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                                    {monthlyStats.length > 0 ? monthlyStats.map(([month, data]) => (
+                                        <div key={month} className="bg-white p-7 rounded-[2.5rem] border border-orange-100 shadow-sm transition-all hover:shadow-md">
+                                            <div className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-2">{month}</div>
+                                            <div className="text-3xl font-black text-slate-800 mb-2">${data.totalSpent}</div>
+                                            <div className="bg-orange-50 text-orange-600 px-3 py-1 rounded-full text-[10px] font-black w-fit">共點購 {data.count} 杯</div>
+                                        </div>
+                                    )) : <div className="col-span-full py-20 text-center bg-white rounded-[3rem] text-slate-300 font-bold italic">目前尚無數據紀錄</div>}
+                                </div>
+                            </section>
 
+                            {/* 店家排行榜 */}
+                            <section>
+                                <div className="flex items-center gap-3 mb-8">
+                                    <div className="w-2 h-8 bg-slate-800 rounded-full"></div>
+                                    <h2 className="text-2xl font-black text-slate-800 tracking-tight">店家消費排行庫</h2>
+                                </div>
+                                <div className="space-y-6">
+                                    {shopStats.map(([shop, data], idx) => (
+                                        <div key={shop} className="bg-white p-8 rounded-[3rem] border border-orange-100 shadow-sm overflow-hidden transition-all hover:border-orange-200">
+                                            <div className="flex flex-wrap items-center justify-between gap-6 mb-8">
+                                                <div className="flex items-center gap-4">
+                                                    <div className="w-12 h-12 rounded-2xl bg-slate-900 text-white flex items-center justify-center font-black text-lg shadow-lg">
+                                                        {idx + 1}
+                                                    </div>
+                                                    <div>
+                                                        <h3 className="text-2xl font-black text-slate-800">{shop}</h3>
+                                                        <p className="text-xs font-bold text-slate-400">總共光顧 {data.count} 次</p>
+                                                    </div>
+                                                </div>
+                                                <div className="bg-orange-50 p-4 rounded-3xl text-center min-w-[120px]">
+                                                    <div className="text-[10px] font-black text-orange-300 uppercase mb-1">累計總額</div>
+                                                    <div className="text-xl font-black text-orange-600">${data.totalSpent}</div>
+                                                </div>
+                                            </div>
+                                            
+                                            <div className="bg-slate-50/50 p-6 rounded-[2rem] border border-slate-100">
+                                                <div className="text-[10px] font-black text-slate-400 mb-4 tracking-widest uppercase flex items-center gap-2">
+                                                    <div className="w-1.5 h-1.5 rounded-full bg-slate-300"></div> 品項點購歷史
+                                                </div>
+                                                <div className="flex flex-wrap gap-3">
+                                                    {data.items.slice().reverse().map((item, i) => (
+                                                        <div key={i} className="bg-white px-4 py-3 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-1">
+                                                            <div className="text-[9px] font-black text-slate-300 uppercase">{item.date}</div>
+                                                            <div className="text-sm font-black text-slate-700">{item.item}</div>
+                                                            <div className="flex justify-between items-center gap-4 mt-1">
+                                                                <span className="text-[10px] font-bold text-slate-400">{item.sugar} / {item.ice}</span>
+                                                                <span className="text-xs font-black text-orange-500">${item.price}</span>
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </section>
+                        </div>
+                    )}
+
+                    {/* 編輯視窗 (沿用原本邏輯但優化排版) */}
                     {modalOpen && (
-                        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md flex items-center justify-center p-4 z-50 overflow-y-auto">
-                            <div className="bg-white p-6 md:p-8 rounded-[2.5rem] w-full max-w-md shadow-2xl my-auto animate-in fade-in zoom-in duration-200" onClick={e=>e.stopPropagation()}>
-                                <div className="flex justify-between items-center mb-6">
-                                    <h2 className="text-2xl font-black text-slate-800">{selectedDate}</h2>
-                                    <button onClick={()=>setModalOpen(false)} className="text-slate-300 hover:text-slate-500 text-2xl px-2">✕</button>
+                        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md flex items-center justify-center p-4 z-50 overflow-y-auto" onClick={()=>setModalOpen(false)}>
+                            <div className="bg-white p-8 rounded-[3rem] w-full max-w-md shadow-2xl my-auto animate-in fade-in zoom-in duration-300" onClick={e=>e.stopPropagation()}>
+                                <div className="flex justify-between items-center mb-8">
+                                    <h2 className="text-3xl font-black text-slate-800 tracking-tight">{selectedDate}</h2>
+                                    <button onClick={()=>setModalOpen(false)} className="bg-slate-100 text-slate-400 w-10 h-10 rounded-full flex items-center justify-center font-bold hover:bg-slate-200 transition-all">✕</button>
                                 </div>
                                 
-                                <div className="space-y-8 max-h-[60vh] overflow-y-auto pr-2 custom-scroll pb-4">
+                                <div className="space-y-8 max-h-[55vh] overflow-y-auto pr-3 custom-scroll pb-4">
                                     {editingDrinks.map((drink, index) => {
-                                        // 濾選選單顯示項目
-                                        const filteredShops = shopDatabase.filter(s => 
-                                            s.toLowerCase().includes(drink.shop.toLowerCase()) && s !== drink.shop
-                                        );
-
+                                        const filteredShops = shopDatabase.filter(s => s.toLowerCase().includes(drink.shop.toLowerCase()) && s !== drink.shop);
                                         return (
-                                            <div key={drink.id} className="p-5 bg-slate-50 rounded-[2rem] space-y-4 relative border border-slate-100 shadow-inner">
+                                            <div key={drink.id} className="p-6 bg-slate-50/50 rounded-[2.5rem] space-y-5 relative border border-slate-100 shadow-inner">
                                                 {editingDrinks.length > 1 && (
-                                                    <button 
-                                                        onClick={() => removeDrinkField(index)}
-                                                        className="absolute -top-2 -right-2 bg-rose-500 text-white w-7 h-7 rounded-full text-xs font-bold shadow-lg z-10"
-                                                    >
-                                                        ✕
-                                                    </button>
+                                                    <button onClick={() => setEditingDrinks(editingDrinks.filter((_, i) => i !== index))} className="absolute -top-2 -right-2 bg-rose-500 text-white w-8 h-8 rounded-full text-xs font-black shadow-lg z-10">✕</button>
                                                 )}
-                                                <div className="grid grid-cols-2 gap-3">
-                                                    {/* 智慧店家輸入框 */}
+                                                <div className="grid grid-cols-2 gap-4">
                                                     <div className="col-span-1 relative">
-                                                        <input 
-                                                            type="text" 
-                                                            placeholder="店家" 
-                                                            className="w-full p-3 bg-white rounded-xl font-bold text-sm shadow-sm outline-none focus:ring-2 focus:ring-orange-200" 
-                                                            value={drink.shop} 
-                                                            onFocus={() => setOpenDropdownIdx(index)}
-                                                            onClick={(e) => { e.stopPropagation(); setOpenDropdownIdx(index); }}
-                                                            onChange={e=>handleUpdateDrink(index, 'shop', e.target.value)}
-                                                        />
+                                                        <label className="text-[10px] font-black text-slate-300 ml-2 mb-1 block uppercase">店家</label>
+                                                        <input type="text" placeholder="例: 50嵐" className="w-full p-4 bg-white rounded-2xl font-black text-sm shadow-sm outline-none focus:ring-2 focus:ring-orange-200" value={drink.shop} onFocus={() => setOpenDropdownIdx(index)} onClick={(e) => { e.stopPropagation(); setOpenDropdownIdx(index); }} onChange={e=>{ const updated = [...editingDrinks]; updated[index].shop = e.target.value; setEditingDrinks(updated); }} />
                                                         {openDropdownIdx === index && (filteredShops.length > 0 || (drink.shop && !shopDatabase.includes(drink.shop))) && (
-                                                            <div className="absolute left-0 right-0 top-full mt-1 bg-white rounded-xl shadow-xl border border-slate-100 z-[60] max-h-40 overflow-y-auto py-1">
+                                                            <div className="absolute left-0 right-0 top-full mt-2 bg-white rounded-2xl shadow-2xl border border-slate-100 z-[60] max-h-48 overflow-y-auto py-2">
                                                                 {filteredShops.map(s => (
-                                                                    <div 
-                                                                        key={s} 
-                                                                        className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-orange-50 cursor-pointer"
-                                                                        onClick={() => { handleUpdateDrink(index, 'shop', s); setOpenDropdownIdx(null); }}
-                                                                    >
-                                                                        {s}
-                                                                    </div>
+                                                                    <div key={s} className="px-5 py-3 text-xs font-bold text-slate-600 hover:bg-orange-50 cursor-pointer transition-colors" onClick={() => { const updated = [...editingDrinks]; updated[index].shop = s; setEditingDrinks(updated); setOpenDropdownIdx(null); }}>{s}</div>
                                                                 ))}
-                                                                {drink.shop && !shopDatabase.includes(drink.shop) && (
-                                                                    <div className="px-4 py-2 text-[10px] font-black text-orange-500 bg-orange-50 italic">
-                                                                        + 新增「{drink.shop}」到清單
-                                                                    </div>
-                                                                )}
+                                                                {drink.shop && !shopDatabase.includes(drink.shop) && <div className="px-5 py-3 text-[10px] font-black text-orange-500 bg-orange-50 italic underline">+ 新增店家</div>}
                                                             </div>
                                                         )}
                                                     </div>
-
-                                                    <input type="number" placeholder="價格" className="col-span-1 p-3 bg-white rounded-xl font-bold text-sm shadow-sm outline-none focus:ring-2 focus:ring-orange-200" value={drink.price} onChange={e=>handleUpdateDrink(index, 'price', e.target.value)}/>
-                                                    <input type="text" placeholder="品項名稱" className="col-span-2 p-3 bg-white rounded-xl font-bold text-sm shadow-sm outline-none focus:ring-2 focus:ring-orange-200" value={drink.item} onChange={e=>handleUpdateDrink(index, 'item', e.target.value)}/>
+                                                    <div className="col-span-1">
+                                                        <label className="text-[10px] font-black text-slate-300 ml-2 mb-1 block uppercase">價格</label>
+                                                        <input type="number" placeholder="$" className="w-full p-4 bg-white rounded-2xl font-black text-sm shadow-sm outline-none focus:ring-2 focus:ring-orange-200" value={drink.price} onChange={e=>{ const updated = [...editingDrinks]; updated[index].price = e.target.value; setEditingDrinks(updated); }}/>
+                                                    </div>
+                                                    <div className="col-span-2">
+                                                        <label className="text-[10px] font-black text-slate-300 ml-2 mb-1 block uppercase">品項</label>
+                                                        <input type="text" placeholder="品項名稱" className="w-full p-4 bg-white rounded-2xl font-black text-sm shadow-sm outline-none focus:ring-2 focus:ring-orange-200" value={drink.item} onChange={e=>{ const updated = [...editingDrinks]; updated[index].item = e.target.value; setEditingDrinks(updated); }}/>
+                                                    </div>
                                                 </div>
 
-                                                <div className="space-y-1">
+                                                <div className="space-y-1.5">
                                                     <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">冰塊</div>
-                                                    <div className="flex flex-wrap gap-1">
+                                                    <div className="flex flex-wrap gap-1.5">
                                                         {iceOptions.map(o => (
-                                                            <button key={o} onClick={()=>handleUpdateDrink(index, 'ice', o)} className={`px-2 py-1.5 rounded-lg text-[10px] font-bold border-2 transition-all ${drink.ice===o ? 'bg-cyan-500 border-cyan-500 text-white shadow-md' : 'border-white bg-white text-slate-400 hover:border-cyan-100'}`}>{o}</button>
+                                                            <button key={o} onClick={()=>{ const updated = [...editingDrinks]; updated[index].ice = o; setEditingDrinks(updated); }} className={`px-2.5 py-2 rounded-xl text-[10px] font-black border-2 transition-all ${drink.ice===o ? 'bg-cyan-500 border-cyan-500 text-white shadow-md' : 'bg-white border-transparent text-slate-400 hover:border-cyan-100'}`}>{o}</button>
                                                         ))}
                                                     </div>
                                                 </div>
 
-                                                <div className="space-y-1">
+                                                <div className="space-y-1.5">
                                                     <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">甜度</div>
-                                                    <div className="flex flex-wrap gap-1">
+                                                    <div className="flex flex-wrap gap-1.5">
                                                         {sugarOptions.map(o => (
-                                                            <button key={o} onClick={()=>handleUpdateDrink(index, 'sugar', o)} className={`px-2 py-1.5 rounded-lg text-[10px] font-bold border-2 transition-all ${drink.sugar===o ? 'bg-pink-500 border-pink-500 text-white shadow-md' : 'border-white bg-white text-slate-400 hover:border-pink-100'}`}>{o}</button>
+                                                            <button key={o} onClick={()=>{ const updated = [...editingDrinks]; updated[index].sugar = o; setEditingDrinks(updated); }} className={`px-2.5 py-2 rounded-xl text-[10px] font-black border-2 transition-all ${drink.sugar===o ? 'bg-pink-500 border-pink-500 text-white shadow-md' : 'bg-white border-transparent text-slate-400 hover:border-pink-100'}`}>{o}</button>
                                                         ))}
                                                     </div>
                                                 </div>
@@ -335,16 +384,11 @@
                                     })}
                                 </div>
 
-                                <button 
-                                    onClick={addDrinkField}
-                                    className="w-full mt-4 border-2 border-dashed border-slate-200 text-slate-400 py-3 rounded-2xl font-black text-sm hover:bg-slate-50 hover:border-orange-200 hover:text-orange-400 transition-all"
-                                >
-                                    + 新增一杯飲品
-                                </button>
+                                <button onClick={() => setEditingDrinks([...editingDrinks, { shop: '', item: '', price: '', ice: '少冰', sugar: '微糖', id: Date.now() }])} className="w-full mt-6 border-2 border-dashed border-slate-200 text-slate-400 py-4 rounded-[2rem] font-black text-sm hover:bg-orange-50 hover:border-orange-200 hover:text-orange-500 transition-all">+ 新增一杯飲品</button>
 
-                                <div className="flex gap-3 pt-6">
-                                    <button onClick={handleSave} className="flex-[2] bg-slate-900 text-white py-4 rounded-2xl font-black shadow-xl hover:bg-black active:scale-95 transition-all">確認儲存</button>
-                                    <button onClick={()=>setModalOpen(false)} className="flex-1 bg-slate-100 text-slate-500 py-4 rounded-2xl font-bold hover:bg-slate-200">取消</button>
+                                <div className="flex gap-4 pt-8">
+                                    <button onClick={handleSave} className="flex-[2] bg-slate-900 text-white py-5 rounded-[2rem] font-black shadow-2xl hover:bg-black active:scale-95 transition-all">儲存本日紀錄</button>
+                                    <button onClick={()=>setModalOpen(false)} className="flex-1 bg-slate-100 text-slate-500 py-5 rounded-[2rem] font-black hover:bg-slate-200 transition-all">關閉</button>
                                 </div>
                             </div>
                         </div>
@@ -353,13 +397,8 @@
             );
         }
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+            const root = ReactDOM.createRoot(document.getElementById('root'));
+            root.render(<App />);
     </script>
-    <style>
-        .custom-scroll::-webkit-scrollbar { width: 4px; }
-        .custom-scroll::-webkit-scrollbar-track { background: transparent; }
-        .custom-scroll::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
-    </style>
 </body>
 </html>
